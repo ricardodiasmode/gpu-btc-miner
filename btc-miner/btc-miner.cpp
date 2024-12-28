@@ -23,6 +23,17 @@ static constexpr bool DEBUG_WORK_DATA = false;
 static constexpr bool DEBUG_MINING = false;
 static constexpr bool DEBUG_HASH_RATE = true;
 
+uint32_t K[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+};
+
 // Definições gerais
 using namespace std;
 namespace asio = boost::asio;
@@ -568,7 +579,7 @@ public:
         cl_kernel kernel = clCreateKernel(program, "sha256d_kernel", NULL);
 
         // Allocate buffers
-        size_t batchSize = 1024; // Number of nonces per batch
+        size_t batchSize = 2048; // Number of nonces per batch
         char* blockHeaders = new char[80 * batchSize]; // Adjust header size
         uint64_t* nonces = new uint64_t[batchSize];
         uint64_t* results = new uint64_t[1];
@@ -577,10 +588,15 @@ public:
         cl_mem clBlockHeaders = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(char) * 80 * batchSize, NULL, NULL);
         cl_mem clNonces = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(uint64_t) * batchSize, NULL, NULL);
         cl_mem clResults = clCreateBuffer(context, CL_MEM_WRITE_ONLY, sizeof(uint64_t), NULL, NULL);
+        cl_mem d_K = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+            64 * sizeof(uint32_t), K, nullptr);
 
         // Timer for hash rate calculation
         std::chrono::time_point<std::chrono::system_clock> StartTime = std::chrono::system_clock::now();
         uint64_t nHashes = 0;
+
+        // Flag to avoid re-writing headers each time
+        static bool headers_written = false;
 
         while (true) {
             // Fill nonces and block headers
@@ -589,8 +605,13 @@ public:
                 memcpy(blockHeaders + i * 80, received_data.GetHeader(nonces[i]).c_str(), 80);
             }
 
-            // Copy data to GPU
-            clEnqueueWriteBuffer(queue, clBlockHeaders, CL_TRUE, 0, sizeof(char) * 80 * batchSize, blockHeaders, 0, NULL, NULL);
+            // Only write data to GPU once
+            if (!headers_written) {
+                clEnqueueWriteBuffer(queue, clBlockHeaders, CL_TRUE, 0, sizeof(char) * 80 * batchSize, blockHeaders, 0, NULL, NULL);
+                headers_written = true;
+            }
+
+            // Copy nonces to GPU
             clEnqueueWriteBuffer(queue, clNonces, CL_TRUE, 0, sizeof(uint64_t) * batchSize, nonces, 0, NULL, NULL);
 
             // Set kernel arguments
@@ -598,13 +619,18 @@ public:
             clSetKernelArg(kernel, 1, sizeof(cl_mem), &clNonces);
             clSetKernelArg(kernel, 2, sizeof(cl_mem), &clResults);
             clSetKernelArg(kernel, 3, sizeof(uint64_t), &target);
+            clSetKernelArg(kernel, 4, sizeof(uint32_t), &d_K);
+
+            // Adjust global and local work size based on GPU capabilities
+            size_t globalWorkSize = batchSize * 1024;  // Increased global size for better parallelism
+            size_t localWorkSize = 256;                 // Local work size
 
             // Launch the kernel
-            size_t globalWorkSize = batchSize;
-            clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &globalWorkSize, NULL, 0, NULL, NULL);
+            clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &globalWorkSize, &localWorkSize, 0, NULL, NULL);
 
-            // Read results
-            clEnqueueReadBuffer(queue, clResults, CL_TRUE, 0, sizeof(uint64_t), results, 0, NULL, NULL);
+            // Asynchronously read results from GPU
+            cl_event read_event;
+            clEnqueueReadBuffer(queue, clResults, CL_FALSE, 0, sizeof(uint64_t), results, 0, NULL, &read_event);
 
             // Check if a solution was found
             if (results[0] != 0) {
@@ -617,8 +643,8 @@ public:
 
             std::chrono::time_point<std::chrono::system_clock> Now = std::chrono::system_clock::now();
             const auto DeltaTime = std::chrono::duration_cast<std::chrono::seconds>(Now - StartTime).count();
-            if (DeltaTime%10 == 0)
-                cout << "GPU made " << nHashes << " hashes in " << DeltaTime << " seconds (" << nHashes/DeltaTime << "H/s)." << endl;
+            if (DeltaTime % 10 == 0)
+                cout << "GPU made " << nHashes << " hashes in " << DeltaTime << " seconds (" << nHashes / DeltaTime << "H/s)." << endl;
         }
 
         std::chrono::time_point<std::chrono::system_clock> Now = std::chrono::system_clock::now();
@@ -637,6 +663,7 @@ public:
         clReleaseCommandQueue(queue);
         clReleaseContext(context);
     }
+
 
     void StartMiner() {
         while (true) {
