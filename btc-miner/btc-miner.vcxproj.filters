@@ -24,5 +24,6 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="compile.bat" />
+    <None Include="sha256d_kernel.cl" />
   </ItemGroup>
 </Project>

@@ -1,10 +1,14 @@
 ﻿C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Microsoft\VC\v170\Microsoft.CppCommon.targets(254,5): warning MSB8018: No outputs specified for item "kernel.cu". Its custom build command will be skipped.
-  The vcpkg manifest was disabled, but we found a manifest file in C:\Users\ricar\source\repos\cpu-btc-miner\. You may want to enable vcpkg manifests in your properties page or pass /p:VcpkgEnableManifest=true to the msbuild invocation.
+  The vcpkg manifest was disabled, but we found a manifest file in C:\Users\ricar\source\repos\gpu-btc-miner\. You may want to enable vcpkg manifests in your properties page or pass /p:VcpkgEnableManifest=true to the msbuild invocation.
   btc-miner.cpp
   Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
   - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
   - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
   Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
-C:\Users\ricar\source\repos\cpu-btc-miner\btc-miner\btc-miner.cpp(442,46): warning C4101: 'e': unreferenced local variable
-C:\Users\ricar\source\repos\cpu-btc-miner\btc-miner\btc-miner.cpp(459): warning C4715: 'Miner::ReceiveWorkData': not all control paths return a value
-  btc-miner.vcxproj -> C:\Users\ricar\source\repos\cpu-btc-miner\x64\Debug\btc-miner.exe
+  cl_version.h: CL_TARGET_OPENCL_VERSION is not defined. Defaulting to 300 (OpenCL 3.0)
+C:\Users\ricar\source\repos\gpu-btc-miner\btc-miner\btc-miner.cpp(211,47): warning C4267: 'argument': conversion from 'size_t' to 'cl_uint', possible loss of data
+C:\Users\ricar\source\repos\gpu-btc-miner\btc-miner\btc-miner.cpp(539,46): warning C4101: 'e': unreferenced local variable
+C:\Users\ricar\source\repos\gpu-btc-miner\btc-miner\btc-miner.cpp(589,79): warning C4244: 'argument': conversion from 'uint64_t' to 'uint32_t', possible loss of data
+C:\Users\ricar\source\repos\gpu-btc-miner\btc-miner\btc-miner.cpp(612,39): warning C4244: 'argument': conversion from 'uint64_t' to 'const uint32_t', possible loss of data
+C:\Users\ricar\source\repos\gpu-btc-miner\btc-miner\btc-miner.cpp(556): warning C4715: 'Miner::ReceiveWorkData': not all control paths return a value
+  btc-miner.vcxproj -> C:\Users\ricar\source\repos\gpu-btc-miner\x64\Debug\btc-miner.exe

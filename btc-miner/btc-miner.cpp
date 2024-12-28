@@ -7,6 +7,9 @@
 #include <nlohmann/json.hpp>
 #include <openssl/evp.h>  // For OpenSSL 3.0
 #include <regex>
+#include <CL/cl.h>
+#include <CL/cl_platform.h>
+#include <fstream>
 
 static constexpr uint8_t SUBSCRIBE_MESSAGE_ID = 1;
 static constexpr uint8_t AUTHORIZE_MESSAGE_ID = 2;
@@ -130,6 +133,100 @@ std::string sha256d(const std::string& data) {
     // Return as a hex string
     return StringToHex(std::string(reinterpret_cast<char*>(second_hash), second_hash_len));
 }
+
+cl_context CreateOpenCLContext() {
+    cl_int err;
+    cl_uint platformCount;
+    cl_platform_id platform;
+
+    // Get the first available platform
+    clGetPlatformIDs(1, &platform, &platformCount);
+
+    // Get a GPU device from the platform
+    cl_device_id device;
+    clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
+
+    // Create a context with the selected device
+    cl_context context = clCreateContext(NULL, 1, &device, NULL, NULL, &err);
+    if (err != CL_SUCCESS) {
+        cerr << "Failed to create OpenCL context. Error: " << err << endl;
+        exit(EXIT_FAILURE);
+    }
+
+    return context;
+}
+
+cl_command_queue CreateCommandQueue(cl_context context) {
+    cl_int err;
+
+    // Query devices in the context
+    size_t deviceBufferSize;
+    clGetContextInfo(context, CL_CONTEXT_DEVICES, 0, NULL, &deviceBufferSize);
+
+    // Select the first available device
+    cl_device_id device;
+    clGetContextInfo(context, CL_CONTEXT_DEVICES, deviceBufferSize, &device, NULL);
+
+    // Create the command queue
+#if CL_TARGET_OPENCL_VERSION >= 200
+    cl_command_queue queue = clCreateCommandQueueWithProperties(context, device, 0, &err);
+#else
+    cl_command_queue queue = clCreateCommandQueue(context, device, 0, &err);
+#endif
+
+    if (err != CL_SUCCESS) {
+        cerr << "Failed to create OpenCL command queue. Error: " << err << endl;
+        exit(EXIT_FAILURE);
+    }
+
+    return queue;
+}
+
+cl_program CreateProgram(cl_context context, const char* kernelFileName) {
+    // Step 1: Read the kernel source from file
+    std::ifstream kernelFile(kernelFileName, std::ios::in);
+    if (!kernelFile.is_open()) {
+        throw std::runtime_error("Failed to open kernel file: " + std::string(kernelFileName));
+    }
+
+    std::string kernelSource((std::istreambuf_iterator<char>(kernelFile)), std::istreambuf_iterator<char>());
+    kernelFile.close();
+    const char* kernelSourceCStr = kernelSource.c_str();
+    size_t kernelSourceSize = kernelSource.size();
+
+    // Step 2: Create the program from the kernel source
+    cl_int err;
+    cl_program program = clCreateProgramWithSource(context, 1, &kernelSourceCStr, &kernelSourceSize, &err);
+    if (err != CL_SUCCESS) {
+        throw std::runtime_error("Failed to create OpenCL program. Error code: " + std::to_string(err));
+    }
+
+    // Step 3: Get devices from the context
+    size_t deviceBufferSize;
+    clGetContextInfo(context, CL_CONTEXT_DEVICES, 0, nullptr, &deviceBufferSize);
+    std::vector<cl_device_id> devices(deviceBufferSize / sizeof(cl_device_id));
+    clGetContextInfo(context, CL_CONTEXT_DEVICES, deviceBufferSize, devices.data(), nullptr);
+
+    // Step 4: Build the program
+    err = clBuildProgram(program, devices.size(), devices.data(), nullptr, nullptr, nullptr);
+    if (err != CL_SUCCESS) {
+        // If build failed, print the build log for each device
+        for (const auto& device : devices) {
+            size_t logSize;
+            clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0, nullptr, &logSize);
+            std::vector<char> buildLog(logSize);
+            clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, logSize, buildLog.data(), nullptr);
+
+            std::cerr << "Error building program on device: " << buildLog.data() << std::endl;
+        }
+        clReleaseProgram(program);
+        throw std::runtime_error("Failed to build OpenCL program.");
+    }
+
+    return program;
+}
+
+
 
 struct work_data
 {
@@ -463,62 +560,82 @@ public:
         return maxTarget / difficulty;
     }
 
-    void Mine(uint64_t target) {
-        uint32_t nonce = 0;
+    void MineGPU(uint64_t target) {
+        // Initialize OpenCL context, queue, and buffers
+        cl_context context = CreateOpenCLContext();
+        cl_command_queue queue = CreateCommandQueue(context);
+        cl_program program = CreateProgram(context, "sha256d_kernel.cl");
+        cl_kernel kernel = clCreateKernel(program, "sha256d_kernel", NULL);
 
+        // Allocate buffers
+        size_t batchSize = 1024; // Number of nonces per batch
+        char* blockHeaders = new char[80 * batchSize]; // Adjust header size
+        uint64_t* nonces = new uint64_t[batchSize];
+        uint64_t* results = new uint64_t[1];
+        results[0] = 0;
+
+        cl_mem clBlockHeaders = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(char) * 80 * batchSize, NULL, NULL);
+        cl_mem clNonces = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(uint64_t) * batchSize, NULL, NULL);
+        cl_mem clResults = clCreateBuffer(context, CL_MEM_WRITE_ONLY, sizeof(uint64_t), NULL, NULL);
+
+        // Timer for hash rate calculation
+        std::chrono::time_point<std::chrono::system_clock> StartTime = std::chrono::system_clock::now();
         uint64_t nHashes = 0;
 
-        std::chrono::time_point<std::chrono::system_clock> StartTime = std::chrono::system_clock::now();
-
         while (true) {
-            std::string blockHeader = received_data.GetHeader(nonce);
-
-            if (DEBUG_MINING)
-                cout << "Block header: " << blockHeader << endl;
-
-            // Compute the double SHA-256 hash of the block header
-            std::string hashHex = sha256d(blockHeader);
-            nHashes++;
-
-            // If did one billion hashes, print time
-            if (DEBUG_HASH_RATE && 
-                nHashes % 10000 == 0)
-            {
-                std::chrono::time_point<std::chrono::system_clock> Now = std::chrono::system_clock::now();
-
-                const auto DeltaTime = std::chrono::duration_cast<chrono::seconds>(Now - StartTime).count();
-
-                cout << "Made " << nHashes << " hashes in " << DeltaTime << " seconds.";
+            // Fill nonces and block headers
+            for (size_t i = 0; i < batchSize; i++) {
+                nonces[i] = nHashes + i; // Assign sequential nonces
+                memcpy(blockHeaders + i * 80, received_data.GetHeader(nonces[i]).c_str(), 80);
             }
 
-            if (DEBUG_MINING)
-                cout << "Hash (hex): " << hashHex << endl;
+            // Copy data to GPU
+            clEnqueueWriteBuffer(queue, clBlockHeaders, CL_TRUE, 0, sizeof(char) * 80 * batchSize, blockHeaders, 0, NULL, NULL);
+            clEnqueueWriteBuffer(queue, clNonces, CL_TRUE, 0, sizeof(uint64_t) * batchSize, nonces, 0, NULL, NULL);
 
-            // Convert hashHex to a numeric value for comparison
-            uint64_t hashValue = stringToUint64(hashHex.substr(0, 16)); // Only consider the first 64 bits for comparison
+            // Set kernel arguments
+            clSetKernelArg(kernel, 0, sizeof(cl_mem), &clBlockHeaders);
+            clSetKernelArg(kernel, 1, sizeof(cl_mem), &clNonces);
+            clSetKernelArg(kernel, 2, sizeof(cl_mem), &clResults);
+            clSetKernelArg(kernel, 3, sizeof(uint64_t), &target);
 
-            if (DEBUG_MINING)
-                cout << "Hash value (numeric): " << hashValue << endl;
+            // Launch the kernel
+            size_t globalWorkSize = batchSize;
+            clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &globalWorkSize, NULL, 0, NULL, NULL);
 
-            // Verify if the hash meets the target
-            if (hashValue <= target) {
+            // Read results
+            clEnqueueReadBuffer(queue, clResults, CL_TRUE, 0, sizeof(uint64_t), results, 0, NULL, NULL);
 
-                cout << "Nonce found: " << nonce << endl;
-                cout << "Hash: " << hashValue << endl;
-                cout << "target: " << target << endl;
-
-                SendSolution(nonce);
-                break; // Break the loop once a valid solution is found
+            // Check if a solution was found
+            if (results[0] != 0) {
+                cout << "Solution found: Nonce = " << results[0] << endl;
+                SendSolution(results[0]);
+                break; // Exit after finding a solution
             }
 
-            // Increment ExtraNonce2 and reset if it exceeds the limit
-            received_data.ExtraNonce2++;
-            if (received_data.ExtraNonce2 > received_data.ExtraNonceSize2) {
-                received_data.ExtraNonce2 = 0;
-            }
+            nHashes += batchSize; // Increment total number of hashes
 
-            nonce++;
+            std::chrono::time_point<std::chrono::system_clock> Now = std::chrono::system_clock::now();
+            const auto DeltaTime = std::chrono::duration_cast<std::chrono::seconds>(Now - StartTime).count();
+            if (DeltaTime%10 == 0)
+                cout << "GPU made " << nHashes << " hashes in " << DeltaTime << " seconds (" << nHashes/DeltaTime << "H/s)." << endl;
         }
+
+        std::chrono::time_point<std::chrono::system_clock> Now = std::chrono::system_clock::now();
+        const auto DeltaTime = std::chrono::duration_cast<std::chrono::seconds>(Now - StartTime).count();
+        cout << "GPU made " << nHashes << " hashes in " << DeltaTime << " seconds." << endl;
+
+        // Clean up
+        delete[] blockHeaders;
+        delete[] nonces;
+        delete[] results;
+        clReleaseMemObject(clBlockHeaders);
+        clReleaseMemObject(clNonces);
+        clReleaseMemObject(clResults);
+        clReleaseKernel(kernel);
+        clReleaseProgram(program);
+        clReleaseCommandQueue(queue);
+        clReleaseContext(context);
     }
 
     void StartMiner() {
@@ -532,7 +649,7 @@ public:
             uint64_t target = calculateTarget(received_data.difficulty);
 
             cout << "--- Starting POW. ---" << endl;
-            Mine(target);
+            MineGPU(target);
             cout << "--- POW finished. ---" << endl << endl;
         }
     }
