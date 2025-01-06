@@ -79,30 +79,34 @@ void sha256(const char* input, int length, char* output, const __constant uint* 
 
 // Kernel Function
 __kernel void sha256d_kernel(
-    __global const char* blockHeaders,
+    __global const uint4* blockHeaders, // Load block headers as uint4
     __global const ulong* nonces,
     __global ulong* results,
     ulong target,
     __constant uint* K) {
 
-    int gid = get_global_id(0);  // Global thread ID
-    __local char localHeader[80];  // Local memory for the header
+    int gid = get_global_id(0);
     ulong nonce = nonces[gid];
 
     // Load block header into local memory
-    for (int i = 0; i < 80; i++) {
-        localHeader[i] = blockHeaders[gid * 80 + i];
+    __local uint4 localHeaderInt4[20];
+    for (int i = 0; i < 20; i++) {
+        localHeaderInt4[i] = blockHeaders[gid * 20 + i];
     }
 
-    // Insert nonce into the header
-    for (int i = 0; i < 8; i++) {
-        localHeader[NONCE_OFFSET + i] = (char)((nonce >> (i * 8)) & 0xFF);
-    }
+    // Insert nonce into header
+    localHeaderInt4[NONCE_OFFSET / 4] = (uint4)(
+        (uint)(nonce & 0xFFFFFFFF),
+        (uint)(nonce >> 32),
+        localHeaderInt4[NONCE_OFFSET / 4].z,
+        localHeaderInt4[NONCE_OFFSET / 4].w
+        );
+
+    barrier(CLK_LOCAL_MEM_FENCE);
 
     // Compute double SHA-256
-    char hash1[32];
-    sha256(localHeader, 80, hash1, K);
-    char hash2[32];
+    char hash1[32], hash2[32];
+    sha256((char*)localHeaderInt4, 80, hash1, K);
     sha256(hash1, 32, hash2, K);
 
     // Convert hash to numeric value
@@ -112,7 +116,6 @@ __kernel void sha256d_kernel(
     }
 
     // Check if hash meets target
-    if (hashValue <= target) {
-        atomic_min(&results[0], nonce);
-    }
+    uint mask = (hashValue <= target) ? 0xFFFFFFFF : 0;
+    atomic_min(&results[0], mask & nonce);
 }

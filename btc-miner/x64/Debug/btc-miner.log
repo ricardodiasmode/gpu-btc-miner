@@ -6,11 +6,8 @@
   - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
   Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
   cl_version.h: CL_TARGET_OPENCL_VERSION is not defined. Defaulting to 300 (OpenCL 3.0)
-C:\Users\ricar\source\repos\gpu-btc-miner\btc-miner\btc-miner.cpp(171,44): warning C4018: '>=': signed/unsigned mismatch
-C:\Users\ricar\source\repos\gpu-btc-miner\btc-miner\btc-miner.cpp(206,40): warning C4018: '>=': signed/unsigned mismatch
-C:\Users\ricar\source\repos\gpu-btc-miner\btc-miner\btc-miner.cpp(295,47): warning C4267: 'argument': conversion from 'size_t' to 'cl_uint', possible loss of data
-C:\Users\ricar\source\repos\gpu-btc-miner\btc-miner\btc-miner.cpp(621,46): warning C4101: 'e': unreferenced local variable
-C:\Users\ricar\source\repos\gpu-btc-miner\btc-miner\btc-miner.cpp(676,79): warning C4244: 'argument': conversion from 'uint64_t' to 'uint32_t', possible loss of data
-C:\Users\ricar\source\repos\gpu-btc-miner\btc-miner\btc-miner.cpp(709,39): warning C4244: 'argument': conversion from 'uint64_t' to 'const uint32_t', possible loss of data
-C:\Users\ricar\source\repos\gpu-btc-miner\btc-miner\btc-miner.cpp(638): warning C4715: 'Miner::ReceiveWorkData': not all control paths return a value
+C:\Users\ricar\source\repos\gpu-btc-miner\btc-miner\btc-miner.cpp(222,47): warning C4267: 'argument': conversion from 'size_t' to 'cl_uint', possible loss of data
+C:\Users\ricar\source\repos\gpu-btc-miner\btc-miner\btc-miner.cpp(550,46): warning C4101: 'e': unreferenced local variable
+C:\Users\ricar\source\repos\gpu-btc-miner\btc-miner\btc-miner.cpp(603,79): warning C4267: 'argument': conversion from 'size_t' to 'uint32_t', possible loss of data
+C:\Users\ricar\source\repos\gpu-btc-miner\btc-miner\btc-miner.cpp(632,39): warning C4244: 'argument': conversion from 'uint64_t' to 'const uint32_t', possible loss of data
   btc-miner.vcxproj -> C:\Users\ricar\source\repos\gpu-btc-miner\x64\Debug\btc-miner.exe

@@ -564,6 +564,7 @@ public:
             cerr << "Error during work data reception: " << e.what() << endl;
             return false;
         }
+        return true;
     }
 
     uint64_t calculateTarget(uint64_t difficulty) {
@@ -579,14 +580,15 @@ public:
         cl_kernel kernel = clCreateKernel(program, "sha256d_kernel", NULL);
 
         // Allocate buffers
-        size_t batchSize = 2048; // Number of nonces per batch
-        char* blockHeaders = new char[80 * batchSize]; // Adjust header size
-        uint64_t* nonces = new uint64_t[batchSize];
+        size_t batchSize = 1024; // Increased workload per thread
+        size_t nonceBatchSize = 128; // Number of nonces per thread
+        size_t totalNonces = batchSize * nonceBatchSize;
+
+        char* blockHeaders = new char[80 * batchSize];
         uint64_t* results = new uint64_t[1];
         results[0] = 0;
 
         cl_mem clBlockHeaders = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(char) * 80 * batchSize, NULL, NULL);
-        cl_mem clNonces = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(uint64_t) * batchSize, NULL, NULL);
         cl_mem clResults = clCreateBuffer(context, CL_MEM_WRITE_ONLY, sizeof(uint64_t), NULL, NULL);
         cl_mem d_K = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
             64 * sizeof(uint32_t), K, nullptr);
@@ -595,35 +597,26 @@ public:
         std::chrono::time_point<std::chrono::system_clock> StartTime = std::chrono::system_clock::now();
         uint64_t nHashes = 0;
 
-        // Flag to avoid re-writing headers each time
-        static bool headers_written = false;
-
         while (true) {
-            // Fill nonces and block headers
+            // Fill block headers
             for (size_t i = 0; i < batchSize; i++) {
-                nonces[i] = nHashes + i; // Assign sequential nonces
-                memcpy(blockHeaders + i * 80, received_data.GetHeader(nonces[i]).c_str(), 80);
+                memcpy(blockHeaders + i * 80, received_data.GetHeader(nHashes + i * nonceBatchSize).c_str(), 80);
             }
 
-            // Only write data to GPU once
-            if (!headers_written) {
-                clEnqueueWriteBuffer(queue, clBlockHeaders, CL_TRUE, 0, sizeof(char) * 80 * batchSize, blockHeaders, 0, NULL, NULL);
-                headers_written = true;
-            }
-
-            // Copy nonces to GPU
-            clEnqueueWriteBuffer(queue, clNonces, CL_TRUE, 0, sizeof(uint64_t) * batchSize, nonces, 0, NULL, NULL);
+            // Write headers to GPU (only once per batch)
+            clEnqueueWriteBuffer(queue, clBlockHeaders, CL_TRUE, 0, sizeof(char) * 80 * batchSize, blockHeaders, 0, NULL, NULL);
 
             // Set kernel arguments
             clSetKernelArg(kernel, 0, sizeof(cl_mem), &clBlockHeaders);
-            clSetKernelArg(kernel, 1, sizeof(cl_mem), &clNonces);
+            clSetKernelArg(kernel, 1, sizeof(cl_mem), nullptr); // Placeholder for dynamic nonces
             clSetKernelArg(kernel, 2, sizeof(cl_mem), &clResults);
             clSetKernelArg(kernel, 3, sizeof(uint64_t), &target);
             clSetKernelArg(kernel, 4, sizeof(uint32_t), &d_K);
+            clSetKernelArg(kernel, 5, sizeof(uint64_t), &nonceBatchSize);
 
             // Adjust global and local work size based on GPU capabilities
-            size_t globalWorkSize = batchSize * 1024;  // Increased global size for better parallelism
-            size_t localWorkSize = 256;                 // Local work size
+            size_t globalWorkSize = batchSize;
+            size_t localWorkSize = 256; // Optimize for GPU hardware (e.g., NVIDIA warp size)
 
             // Launch the kernel
             clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &globalWorkSize, &localWorkSize, 0, NULL, NULL);
@@ -632,31 +625,33 @@ public:
             cl_event read_event;
             clEnqueueReadBuffer(queue, clResults, CL_FALSE, 0, sizeof(uint64_t), results, 0, NULL, &read_event);
 
-            // Check if a solution was found
+            // Wait for the result and check if a solution is found
+            clWaitForEvents(1, &read_event);
             if (results[0] != 0) {
-                cout << "Solution found: Nonce = " << results[0] << endl;
+                std::cout << "Solution found: Nonce = " << results[0] << std::endl;
                 SendSolution(results[0]);
                 break; // Exit after finding a solution
             }
 
-            nHashes += batchSize; // Increment total number of hashes
+            nHashes += totalNonces; // Increment total number of hashes
 
-            std::chrono::time_point<std::chrono::system_clock> Now = std::chrono::system_clock::now();
-            const auto DeltaTime = std::chrono::duration_cast<std::chrono::seconds>(Now - StartTime).count();
-            if (DeltaTime % 10 == 0)
-                cout << "GPU made " << nHashes << " hashes in " << DeltaTime << " seconds (" << nHashes / DeltaTime << "H/s)." << endl;
+            // Log hash rate every 10 seconds
+            auto Now = std::chrono::system_clock::now();
+            auto DeltaTime = std::chrono::duration_cast<std::chrono::seconds>(Now - StartTime).count();
+            if (DeltaTime > 0 && nHashes % (10 * totalNonces) == 0) {
+                std::cout << "GPU made " << nHashes << " hashes in " << DeltaTime << " seconds ("
+                    << nHashes / DeltaTime << " H/s)." << std::endl;
+            }
         }
 
-        std::chrono::time_point<std::chrono::system_clock> Now = std::chrono::system_clock::now();
-        const auto DeltaTime = std::chrono::duration_cast<std::chrono::seconds>(Now - StartTime).count();
-        cout << "GPU made " << nHashes << " hashes in " << DeltaTime << " seconds." << endl;
+        auto Now = std::chrono::system_clock::now();
+        auto DeltaTime = std::chrono::duration_cast<std::chrono::seconds>(Now - StartTime).count();
+        std::cout << "GPU made " << nHashes << " hashes in " << DeltaTime << " seconds." << std::endl;
 
         // Clean up
         delete[] blockHeaders;
-        delete[] nonces;
         delete[] results;
         clReleaseMemObject(clBlockHeaders);
-        clReleaseMemObject(clNonces);
         clReleaseMemObject(clResults);
         clReleaseKernel(kernel);
         clReleaseProgram(program);
