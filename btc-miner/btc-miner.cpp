@@ -581,8 +581,8 @@ public:
         cl_kernel kernel = clCreateKernel(program, "sha256d_kernel", NULL);
 
         // Allocate buffers
-        size_t batchSize = 1024; // Workload per thread
-        size_t nonceBatchSize = 1024*128; // Number of nonces per thread
+        size_t batchSize = 1024*4; // Workload per thread
+        size_t nonceBatchSize = 32*32*32*16; // Number of nonces per thread
         size_t totalNonces = batchSize * nonceBatchSize;
 
         char* blockHeaders = new char[80 * batchSize];
@@ -628,7 +628,7 @@ public:
 
             err = clSetKernelArg(kernel, 2, sizeof(cl_mem), &clResults);
             if (err != CL_SUCCESS) {
-                std::cerr << "Error setting kernel argument : " << err << std::endl;
+                std::cerr << "Error setting kernel argument 2: " << err << std::endl;
             }
 
             err = clSetKernelArg(kernel, 3, sizeof(uint64_t), &target);

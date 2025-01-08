@@ -8,6 +8,6 @@
   cl_version.h: CL_TARGET_OPENCL_VERSION is not defined. Defaulting to 300 (OpenCL 3.0)
 C:\Users\ricar\source\repos\gpu-btc-miner\btc-miner\btc-miner.cpp(212,47): warning C4267: 'argument': conversion from 'size_t' to 'cl_uint', possible loss of data
 C:\Users\ricar\source\repos\gpu-btc-miner\btc-miner\btc-miner.cpp(538,46): warning C4101: 'e': unreferenced local variable
-C:\Users\ricar\source\repos\gpu-btc-miner\btc-miner\btc-miner.cpp(611,79): warning C4267: 'argument': conversion from 'size_t' to 'uint32_t', possible loss of data
-C:\Users\ricar\source\repos\gpu-btc-miner\btc-miner\btc-miner.cpp(674,39): warning C4244: 'argument': conversion from 'uint64_t' to 'const uint32_t', possible loss of data
+C:\Users\ricar\source\repos\gpu-btc-miner\btc-miner\btc-miner.cpp(614,79): warning C4267: 'argument': conversion from 'size_t' to 'uint32_t', possible loss of data
+C:\Users\ricar\source\repos\gpu-btc-miner\btc-miner\btc-miner.cpp(677,39): warning C4244: 'argument': conversion from 'uint64_t' to 'const uint32_t', possible loss of data
   btc-miner.vcxproj -> C:\Users\ricar\source\repos\gpu-btc-miner\x64\Debug\btc-miner.exe
