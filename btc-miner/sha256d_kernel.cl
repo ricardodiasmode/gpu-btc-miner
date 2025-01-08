@@ -80,13 +80,16 @@ void sha256(const char* input, int length, char* output, const __constant uint* 
 // Kernel Function
 __kernel void sha256d_kernel(
     __global const uint4* blockHeaders, // Load block headers as uint4
-    __global const ulong* nonces,
-    __global ulong* results,
-    ulong target,
-    __constant uint* K) {
-
+    __global const ulong* nonces,       // Array of starting nonces
+    __global ulong* results,            // Store results
+    ulong target,                       // The target value to compare the hash against
+    __constant uint* K,                 // SHA-256 constants
+    ulong NONCE_BATCH_SIZE)               // Number of nonces to process per thread
+{
     int gid = get_global_id(0);
-    ulong nonce = nonces[gid];
+
+    // Assign the starting nonce for this thread
+    ulong start_nonce = nonces[gid];
 
     // Load block header into local memory
     __local uint4 localHeaderInt4[20];
@@ -94,28 +97,36 @@ __kernel void sha256d_kernel(
         localHeaderInt4[i] = blockHeaders[gid * 20 + i];
     }
 
-    // Insert nonce into header
-    localHeaderInt4[NONCE_OFFSET / 4] = (uint4)(
-        (uint)(nonce & 0xFFFFFFFF),
-        (uint)(nonce >> 32),
-        localHeaderInt4[NONCE_OFFSET / 4].z,
-        localHeaderInt4[NONCE_OFFSET / 4].w
-        );
+    // Iterate over the batch of nonces for this thread
+    for (int i = 0; i < NONCE_BATCH_SIZE; i++) {
+        ulong current_nonce = start_nonce + i;
 
-    barrier(CLK_LOCAL_MEM_FENCE);
+        // Insert nonce into header
+        localHeaderInt4[NONCE_OFFSET / 4] = (uint4)(
+            (uint)(current_nonce & 0xFFFFFFFF),
+            (uint)(current_nonce >> 32),
+            localHeaderInt4[NONCE_OFFSET / 4].z,
+            localHeaderInt4[NONCE_OFFSET / 4].w
+            );
 
-    // Compute double SHA-256
-    char hash1[32], hash2[32];
-    sha256((char*)localHeaderInt4, 80, hash1, K);
-    sha256(hash1, 32, hash2, K);
+        barrier(CLK_LOCAL_MEM_FENCE); // Synchronize all threads in the workgroup
 
-    // Convert hash to numeric value
-    ulong hashValue = 0;
-    for (int i = 0; i < 8; i++) {
-        hashValue |= (ulong)(unsigned char)hash2[i] << (i * 8);
+        // Compute double SHA-256
+        char hash1[32], hash2[32];
+        sha256((char*)localHeaderInt4, 80, hash1, K);
+        sha256(hash1, 32, hash2, K);
+
+        // Convert hash to numeric value
+        ulong hashValue = 0;
+        for (int j = 0; j < 8; j++) {
+            hashValue |= (ulong)(unsigned char)hash2[j] << (j * 8);
+        }
+
+        // Check if hash meets target
+        uint mask = (hashValue <= target) ? 0xFFFFFFFF : 0;
+
+        // Use atomic operation to store the smallest valid nonce if needed
+        atomic_min(&results[0], mask & current_nonce);
     }
-
-    // Check if hash meets target
-    uint mask = (hashValue <= target) ? 0xFFFFFFFF : 0;
-    atomic_min(&results[0], mask & nonce);
 }
+

@@ -145,7 +145,7 @@ std::string sha256d(const std::string& data) {
     return StringToHex(std::string(reinterpret_cast<char*>(second_hash), second_hash_len));
 }
 
-cl_context CreateOpenCLContext() {
+cl_context CreateOpenCLContext(cl_device_id* device) {
     cl_int err;
     cl_uint platformCount;
     cl_platform_id platform;
@@ -154,11 +154,10 @@ cl_context CreateOpenCLContext() {
     clGetPlatformIDs(1, &platform, &platformCount);
 
     // Get a GPU device from the platform
-    cl_device_id device;
-    clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
+    clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, device, NULL);
 
     // Create a context with the selected device
-    cl_context context = clCreateContext(NULL, 1, &device, NULL, NULL, &err);
+    cl_context context = clCreateContext(NULL, 1, device, NULL, NULL, &err);
     if (err != CL_SUCCESS) {
         cerr << "Failed to create OpenCL context. Error: " << err << endl;
         exit(EXIT_FAILURE);
@@ -167,23 +166,14 @@ cl_context CreateOpenCLContext() {
     return context;
 }
 
-cl_command_queue CreateCommandQueue(cl_context context) {
+cl_command_queue CreateCommandQueue(cl_context context, cl_device_id device) {
     cl_int err;
 
     // Query devices in the context
     size_t deviceBufferSize;
     clGetContextInfo(context, CL_CONTEXT_DEVICES, 0, NULL, &deviceBufferSize);
 
-    // Select the first available device
-    cl_device_id device;
-    clGetContextInfo(context, CL_CONTEXT_DEVICES, deviceBufferSize, &device, NULL);
-
-    // Create the command queue
-#if CL_TARGET_OPENCL_VERSION >= 200
     cl_command_queue queue = clCreateCommandQueueWithProperties(context, device, 0, &err);
-#else
-    cl_command_queue queue = clCreateCommandQueue(context, device, 0, &err);
-#endif
 
     if (err != CL_SUCCESS) {
         cerr << "Failed to create OpenCL command queue. Error: " << err << endl;
@@ -236,8 +226,6 @@ cl_program CreateProgram(cl_context context, const char* kernelFileName) {
 
     return program;
 }
-
-
 
 struct work_data
 {
@@ -574,14 +562,27 @@ public:
 
     void MineGPU(uint64_t target) {
         // Initialize OpenCL context, queue, and buffers
-        cl_context context = CreateOpenCLContext();
-        cl_command_queue queue = CreateCommandQueue(context);
+        cl_device_id device;
+        cl_context context = CreateOpenCLContext(&device);
+        cl_command_queue queue = CreateCommandQueue(context, device);
         cl_program program = CreateProgram(context, "sha256d_kernel.cl");
+
+        cl_int err = clBuildProgram(program, 1, &device, NULL, NULL, NULL);
+        if (err != CL_SUCCESS) {
+            // Handle the error, print the error log for debugging
+            size_t logSize;
+            clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0, NULL, &logSize);
+            char* log = new char[logSize];
+            clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, logSize, log, NULL);
+            std::cerr << "OpenCL Program Build Log: " << log << std::endl;
+            delete[] log;
+        }
+
         cl_kernel kernel = clCreateKernel(program, "sha256d_kernel", NULL);
 
         // Allocate buffers
-        size_t batchSize = 1024; // Increased workload per thread
-        size_t nonceBatchSize = 128; // Number of nonces per thread
+        size_t batchSize = 1024; // Workload per thread
+        size_t nonceBatchSize = 1024*128; // Number of nonces per thread
         size_t totalNonces = batchSize * nonceBatchSize;
 
         char* blockHeaders = new char[80 * batchSize];
@@ -592,6 +593,13 @@ public:
         cl_mem clResults = clCreateBuffer(context, CL_MEM_WRITE_ONLY, sizeof(uint64_t), NULL, NULL);
         cl_mem d_K = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
             64 * sizeof(uint32_t), K, nullptr);
+        uint64_t* nonces = new uint64_t[totalNonces];
+        cl_mem clNonces = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+            sizeof(uint64_t) * totalNonces, nonces, &err);
+        if (err != CL_SUCCESS) {
+            std::cerr << "Error creating buffer for nonces: " << err << std::endl;
+            return;
+        }
 
         // Timer for hash rate calculation
         std::chrono::time_point<std::chrono::system_clock> StartTime = std::chrono::system_clock::now();
@@ -607,32 +615,70 @@ public:
             clEnqueueWriteBuffer(queue, clBlockHeaders, CL_TRUE, 0, sizeof(char) * 80 * batchSize, blockHeaders, 0, NULL, NULL);
 
             // Set kernel arguments
-            clSetKernelArg(kernel, 0, sizeof(cl_mem), &clBlockHeaders);
-            clSetKernelArg(kernel, 1, sizeof(cl_mem), nullptr); // Placeholder for dynamic nonces
-            clSetKernelArg(kernel, 2, sizeof(cl_mem), &clResults);
-            clSetKernelArg(kernel, 3, sizeof(uint64_t), &target);
-            clSetKernelArg(kernel, 4, sizeof(uint32_t), &d_K);
-            clSetKernelArg(kernel, 5, sizeof(uint64_t), &nonceBatchSize);
+            cl_int err;
+            err = clSetKernelArg(kernel, 0, sizeof(cl_mem), &clBlockHeaders);
+            if (err != CL_SUCCESS) {
+                std::cerr << "Error setting kernel argument 0: " << err << std::endl;
+            }
+
+            err = clSetKernelArg(kernel, 1, sizeof(cl_mem), &clNonces);
+            if (err != CL_SUCCESS) {
+                std::cerr << "Error setting kernel argument 1: " << err << std::endl;
+            }
+
+            err = clSetKernelArg(kernel, 2, sizeof(cl_mem), &clResults);
+            if (err != CL_SUCCESS) {
+                std::cerr << "Error setting kernel argument : " << err << std::endl;
+            }
+
+            err = clSetKernelArg(kernel, 3, sizeof(uint64_t), &target);
+            if (err != CL_SUCCESS) {
+                std::cerr << "Error setting kernel argument 3: " << err << std::endl;
+            }
+
+            err = clSetKernelArg(kernel, 4, sizeof(cl_mem), &d_K);
+            if (err != CL_SUCCESS) {
+                std::cerr << "Error setting kernel argument 4: " << err << std::endl;
+            }
+
+            err = clSetKernelArg(kernel, 5, sizeof(uint64_t), &nonceBatchSize);
+            if (err != CL_SUCCESS) {
+                std::cerr << "Error setting kernel argument 5: " << err << std::endl;
+            }
 
             // Adjust global and local work size based on GPU capabilities
             size_t globalWorkSize = batchSize;
             size_t localWorkSize = 256; // Optimize for GPU hardware (e.g., NVIDIA warp size)
 
             // Launch the kernel
-            clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &globalWorkSize, &localWorkSize, 0, NULL, NULL);
+            err = clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &globalWorkSize, &localWorkSize, 0, NULL, NULL);
+            if (err != CL_SUCCESS) {
+                printf("Error enqueuing kernel: %d\n", err);
+            }
 
             // Asynchronously read results from GPU
             cl_event read_event;
-            clEnqueueReadBuffer(queue, clResults, CL_FALSE, 0, sizeof(uint64_t), results, 0, NULL, &read_event);
+            err = clEnqueueReadBuffer(queue, clResults, CL_FALSE, 0, sizeof(uint64_t), results, 0, NULL, &read_event);
+            if (err != CL_SUCCESS) {
+                std::cerr << "Error on enqueue kernel buffer: " << err << std::endl;
+            }
 
             // Wait for the result and check if a solution is found
-            clWaitForEvents(1, &read_event);
+            err = clWaitForEvents(1, &read_event);
+            if (err != CL_SUCCESS) {
+                std::cerr << "Error on wait kernel event: " << err << std::endl;
+            }
+
             if (results[0] != 0) {
                 std::cout << "Solution found: Nonce = " << results[0] << std::endl;
                 SendSolution(results[0]);
                 break; // Exit after finding a solution
             }
 
+            if (nHashes + totalNonces < nHashes) {
+                cout << "Integer overflow detected!" << endl;
+                break;
+            }
             nHashes += totalNonces; // Increment total number of hashes
 
             // Log hash rate every 10 seconds
@@ -651,6 +697,8 @@ public:
         // Clean up
         delete[] blockHeaders;
         delete[] results;
+        delete[] nonces;
+        clReleaseMemObject(clNonces);
         clReleaseMemObject(clBlockHeaders);
         clReleaseMemObject(clResults);
         clReleaseKernel(kernel);
