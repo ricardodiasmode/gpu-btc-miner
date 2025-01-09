@@ -581,7 +581,7 @@ public:
         cl_kernel kernel = clCreateKernel(program, "sha256d_kernel", NULL);
 
         // Allocate buffers
-        size_t batchSize = 1024*4; // Workload per thread
+        size_t batchSize = 1024*2; // Workload per thread
         size_t nonceBatchSize = 32*32*32*16; // Number of nonces per thread
         size_t totalNonces = batchSize * nonceBatchSize;
 
